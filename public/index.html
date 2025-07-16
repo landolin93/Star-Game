@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Star Game</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>Star Game</h1>
+  <button id="createGameBtn">Create New Game</button>
+  <script>
+    async function createNewGame() {
+      try {
+        const res = await fetch('/api/game', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!res.ok) throw new Error('Failed to create game');
+
+        const data = await res.json();
+        console.log('Game created:', data);
+        alert(`Game #${data.id} created!`);
+      } catch (err) {
+        console.error('Game creation error:', err);
+        alert('Failed to create game. Server may not be running.');
+      }
+    }
+
+    document.getElementById('createGameBtn').addEventListener('click', createNewGame);
+  </script>
+</body>
+</html>
