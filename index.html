@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Star Direction Game</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="dist/styles.css">
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
@@ -100,38 +100,50 @@
         })
       };
 
-      // Game Service
+      // Game Service with Timeout
       const GameService = {
         createGame: async (settings = null) => {
           try {
-            const response = await axios.post(API, { settings });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5-second timeout
+            const response = await axios.post(API, { settings }, { signal: controller.signal });
+            clearTimeout(timeoutId);
             return response.data;
           } catch (error) {
-            throw new Error(error.response?.data?.detail || 'Failed to create game');
+            throw new Error(error.response?.data?.detail || 'Failed to create game: ' + (error.name === 'AbortError' ? 'Request timed out' : error.message));
           }
         },
         placeStar: async (gameId, row, col) => {
           try {
-            const response = await axios.post(`${API}/${gameId}/place-star`, { row, col });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await axios.post(`${API}/${gameId}/place-star`, { row, col }, { signal: controller.signal });
+            clearTimeout(timeoutId);
             return response.data;
           } catch (error) {
-            throw new Error(error.response?.data?.detail || 'Failed to place star');
+            throw new Error(error.response?.data?.detail || 'Failed to place star: ' + (error.name === 'AbortError' ? 'Request timed out' : error.message));
           }
         },
         selectDirection: async (gameId, direction) => {
           try {
-            const response = await axios.post(`${API}/${gameId}/select-direction`, { direction });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await axios.post(`${API}/${gameId}/select-direction`, { direction }, { signal: controller.signal });
+            clearTimeout(timeoutId);
             return response.data;
           } catch (error) {
-            throw new Error(error.response?.data?.detail || 'Failed to select direction');
+            throw new Error(error.response?.data?.detail || 'Failed to select direction: ' + (error.name === 'AbortError' ? 'Request timed out' : error.message));
           }
         },
         undoMove: async (gameId) => {
           try {
-            const response = await axios.post(`${API}/${gameId}/undo`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await axios.post(`${API}/${gameId}/undo`, {}, { signal: controller.signal });
+            clearTimeout(timeoutId);
             return response.data;
           } catch (error) {
-            throw new Error(error.response?.data?.detail || 'Failed to undo move');
+            throw new Error(error.response?.data?.detail || 'Failed to undo move: ' + (error.name === 'AbortError' ? 'Request timed out' : error.message));
           }
         }
       };
@@ -255,7 +267,10 @@
         const [tempSettings, setTempSettings] = useState(defaultGameSettings);
 
         useEffect(() => {
-          createNewGame();
+          createNewGame().catch(error => {
+            console.error('Initial game creation failed:', error);
+            toast({ title: "Error", description: error.message || 'Failed to start game', variant: "destructive" });
+          });
         }, []);
 
         const createNewGame = async (settings = gameSettings) => {
@@ -267,9 +282,13 @@
               setCurrentGameId(response.game.id);
               setGameSettings(settings);
               toast({ title: "Game Created! 🎮", description: "New game started. Player 1 goes first!" });
+            } else {
+              throw new Error(response.message || 'Game creation failed');
             }
           } catch (error) {
-            toast({ title: "Error", description: error.message, variant: "destructive" });
+            console.error('Game creation error:', error);
+            toast({ title: "Error", description: error.message || 'Failed to connect to server', variant: "destructive" });
+            setGameState(null); // Reset to show loading or error state
           } finally {
             setLoading(false);
           }
@@ -285,6 +304,7 @@
               toast({ title: "Star Placed! ⭐", description: "Player 2's turn to select a direction" });
             }
           } catch (error) {
+            console.error('Place star error:', error);
             toast({ title: "Error", description: error.message, variant: "destructive" });
           } finally {
             setLoading(false);
@@ -304,6 +324,7 @@
               });
             }
           } catch (error) {
+            console.error('Direction select error:', error);
             toast({ title: "Error", description: error.message, variant: "destructive" });
           } finally {
             setLoading(false);
@@ -320,6 +341,7 @@
               toast({ title: "Move Undone! ↶", description: "Returned to previous game state" });
             }
           } catch (error) {
+            console.error('Undo error:', error);
             toast({ title: "Error", description: error.message, variant: "destructive" });
           } finally {
             setLoading(false);
@@ -328,7 +350,10 @@
 
         const handleSettingsChange = (newSettings) => {
           setGameSettings(newSettings);
-          createNewGame(newSettings);
+          createNewGame(newSettings).catch(error => {
+            console.error('Settings change error:', error);
+            toast({ title: "Error", description: error.message || 'Failed to apply settings', variant: "destructive" });
+          });
           setSettingsOpen(false);
           toast({ title: "Settings Updated! ⚙️", description: "New game started with updated settings" });
         };
@@ -700,7 +725,7 @@
               'div',
               { className: 'text-center' },
               React.createElement('div', { className: 'text-4xl mb-4' }, '🎮'),
-              React.createElement('div', { className: 'text-lg' }, 'Loading game...')
+              React.createElement('div', { className: 'text-lg' }, loading ? 'Loading game...' : 'Failed to start game. Check server and try again.')
             )
           );
         }
@@ -718,7 +743,7 @@
                 'header',
                 { className: 'text-center mb-8' },
                 React.createElement('h1', { className: 'text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600 mb-2' }, '⭐ Star Direction Game ⭐'),
-                React.createElement('p', { className: 'text-lg text-gray-600' }, 'Strategic placement meets directional transformation')
+                React.createElement('div', { className: 'text-lg text-gray-600' }, 'Strategic placement meets directional transformation')
               ),
               React.createElement(
                 'div',
