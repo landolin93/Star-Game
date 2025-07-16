@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Star Direction Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const BACKEND_URL = 'http://localhost:8000';
+      const API = `${BACKEND_URL}/api/game`;
+
+      // Game Logic Utilities
+      const createEmptyBoard = () => Array.from({ length: 6 }, () => Array(6).fill('empty'));
+
+      const defaultGameSettings = {
+        numberOfRounds: 8,
+        emptySquaresToWin: 1,
+        maxDirections: 8
+      };
+
+      const directionVectors = {
+        N: [-1, 0], S: [1, 0], E: [0, 1], W: [0, -1],
+        NE: [-1, 1], NW: [-1, -1], SE: [1, 1], SW: [1, -1]
+      };
+
+      const mockGameLogic = {
+        placeStar: (board, row, col) => {
+          if (board[row][col] === 'empty') {
+            const newBoard = board.map(r => [...r]);
+            newBoard[row][col] = 'star';
+            return newBoard;
+          }
+          return board;
+        },
+        applyDirection: (board, direction) => {
+          const newBoard = board.map(r => [...r]);
+          const [dRow, dCol] = directionVectors[direction];
+          for (let row = 0; row < 6; row++) {
+            for (let col = 0; col < 6; col++) {
+              if (board[row][col] === 'star') {
+                let currentRow = row + dRow;
+                let currentCol = col + dCol;
+                while (currentRow >= 0 && currentRow < 6 && currentCol >= 0 && currentCol < 6) {
+                  if (newBoard[currentRow][currentCol] === 'empty') {
+                    newBoard[currentRow][currentCol] = 'circle';
+                  }
+                  currentRow += dRow;
+                  currentCol += dCol;
+                }
+              }
+            }
+          }
+          return newBoard;
+        },
+        checkWinner: (board, round, settings) => {
+          if (round > settings.numberOfRounds) {
+            let emptyCount = 0;
+            for (let row = 0; row < 6; row++) {
+              for (let col = 0; col < 6; col++) {
+                if (board[row][col] === 'empty') emptyCount++;
+              }
+            }
+            return emptyCount >= settings.emptySquaresToWin ? { winner: 1, emptyCount } : { winner: 2, emptyCount };
+          }
+          return { winner: null, emptyCount: null };
+        },
+        countStars: (board) => {
+          let count = 0;
+          for (let row = 0; row < 6; row++) {
+            for (let col = 0; col < 6; col++) {
+              if (board[row][col] === 'star') count++;
+            }
+          }
+          return count;
+        },
+        countEmptySquares: (board) => {
+          let count = 0;
+          for (let row = 0; row < 6; row++) {
+            for (let col = 0; col < 6; col++) {
+              if (board[row][col] === 'empty') count++;
+            }
+          }
+          return count;
+        },
+        createGameStateSnapshot: (gameState) => ({
+          board: gameState.board.map(row => [...row]),
+          currentPlayer: gameState.currentPlayer,
+          gamePhase: gameState.gamePhase,
+          round: gameState.round,
+          availableDirections: [...gameState.availableDirections],
+          winner: gameState.winner,
+          starsPlaced: gameState.starsPlaced,
+          settings: { ...gameState.settings }
+        })
+      };
+
+      // Game Service
+      const GameService = {
+        createGame: async (settings = null) => {
+          try {
+            const response = await axios.post(API, { settings });
+            return response.data;
+          } catch (error) {
+            throw new Error(error.response?.data?.detail || 'Failed to create game');
+          }
+        },
+        placeStar: async (gameId, row, col) => {
+          try {
+            const response = await axios.post(`${API}/${gameId}/place-star`, { row, col });
+            return response.data;
+          } catch (error) {
+            throw new Error(error.response?.data?.detail || 'Failed to place star');
+          }
+        },
+        selectDirection: async (gameId, direction) => {
+          try {
+            const response = await axios.post(`${API}/${gameId}/select-direction`, { direction });
+            return response.data;
+          } catch (error) {
+            throw new Error(error.response?.data?.detail || 'Failed to select direction');
+          }
+        },
+        undoMove: async (gameId) => {
+          try {
+            const response = await axios.post(`${API}/${gameId}/undo`);
+            return response.data;
+          } catch (error) {
+            throw new Error(error.response?.data?.detail || 'Failed to undo move');
+          }
+        }
+      };
+
+      // React Components
+      const { useState, useEffect } = React;
+
+      const Button = ({ children, onClick, disabled, variant = 'default', className = '' }) => {
+        const baseStyles = 'px-4 py-2 rounded-md font-medium focus:outline-none focus:ring-2 focus:ring-offset-2';
+        const variantStyles = {
+          default: 'bg-blue-500 text-white hover:bg-blue-600 focus:ring-blue-500',
+          outline: 'border border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-blue-500',
+          secondary: 'bg-gray-200 text-gray-700 hover:bg-gray-300 focus:ring-gray-500',
+          destructive: 'bg-red-500 text-white hover:bg-red-600 focus:ring-red-500'
+        };
+        return React.createElement(
+          'button',
+          {
+            onClick,
+            disabled,
+            className: `${baseStyles} ${variantStyles[variant] || variantStyles.default} ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`
+          },
+          children
+        );
+      };
+
+      const Card = ({ children, className = '' }) =>
+        React.createElement('div', { className: `bg-white shadow-md rounded-lg p-6 ${className}` }, children);
+
+      const Badge = ({ children, variant = 'default', className = '' }) => {
+        const baseStyles = 'inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-medium';
+        const variantStyles = {
+          default: 'bg-blue-100 text-blue-800',
+          outline: 'border border-gray-300 text-gray-700',
+          destructive: 'bg-red-100 text-red-800'
+        };
+        return React.createElement(
+          'span',
+          { className: `${baseStyles} ${variantStyles[variant] || variantStyles.default} ${className}` },
+          children
+        );
+      };
+
+      const Dialog = ({ open, onOpenChange, children }) => {
+        const [isOpen, setIsOpen] = useState(open);
+        useEffect(() => setIsOpen(open), [open]);
+        const handleOpenChange = (value) => {
+          setIsOpen(value);
+          onOpenChange(value);
+        };
+        return isOpen
+          ? React.createElement(
+              'div',
+              { className: 'fixed inset-0 bg-black/50 flex items-center justify-center z-50' },
+              React.createElement(
+                'div',
+                { className: 'bg-white rounded-lg p-6 max-w-md w-full' },
+                React.Children.map(children, child =>
+                  React.cloneElement(child, { onOpenChange: handleOpenChange })
+                )
+              )
+            )
+          : null;
+      };
+
+      const DialogTrigger = ({ children }) => children;
+      const DialogContent = ({ children }) => children;
+      const DialogHeader = ({ children, className = '' }) =>
+        React.createElement('div', { className: `mb-4 ${className}` }, children);
+      const DialogTitle = ({ children, className = '' }) =>
+        React.createElement('h2', { className: `text-xl font-bold ${className}` }, children);
+
+      const Slider = ({ value, onValueChange, min, max, step, className = '' }) => {
+        const handleChange = (e) => onValueChange([parseInt(e.target.value)]);
+        return React.createElement('input', {
+          type: 'range',
+          min,
+          max,
+          step,
+          value: value[0],
+          onChange: handleChange,
+          className: `w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer ${className}`
+        });
+      };
+
+      const Collapsible = ({ open, onOpenChange, children }) => {
+        const [isOpen, setIsOpen] = useState(open);
+        useEffect(() => setIsOpen(open), [open]);
+        return React.createElement(
+          'div',
+          null,
+          React.Children.map(children, child => React.cloneElement(child, { isOpen, setIsOpen }))
+        );
+      };
+
+      const CollapsibleTrigger = ({ children, isOpen, setIsOpen }) =>
+        React.createElement('div', { onClick: () => setIsOpen(!isOpen) }, children);
+      const CollapsibleContent = ({ children, isOpen, className = '' }) =>
+        isOpen ? React.createElement('div', { className: `transition-all ${className}` }, children) : null;
+
+      const Label = ({ children, htmlFor, className = '' }) =>
+        React.createElement('label', { htmlFor, className: `text-sm font-medium text-gray-700 ${className}` }, children);
+
+      const useToast = () => {
+        const [toasts, setToasts] = useState([]);
+        const toast = ({ title, description, variant }) => {
+          setToasts((prev) => [...prev, { id: Date.now(), title, description, variant }]);
+          setTimeout(() => setToasts((prev) => prev.filter(t => t.id !== Date.now())), 3000);
+        };
+        return { toast };
+      };
+
+      const Game = () => {
+        const [gameSettings, setGameSettings] = useState(defaultGameSettings);
+        const [gameState, setGameState] = useState(null);
+        const [currentGameId, setCurrentGameId] = useState(null);
+        const [loading, setLoading] = useState(false);
+        const { toast } = useToast();
+        const [settingsOpen, setSettingsOpen] = useState(false);
+        const [rulesOpen, setRulesOpen] = useState(false);
+        const [tempSettings, setTempSettings] = useState(defaultGameSettings);
+
+        useEffect(() => {
+          createNewGame();
+        }, []);
+
+        const createNewGame = async (settings = gameSettings) => {
+          setLoading(true);
+          try {
+            const response = await GameService.createGame(settings);
+            if (response.success) {
+              setGameState(response.game);
+              setCurrentGameId(response.game.id);
+              setGameSettings(settings);
+              toast({ title: "Game Created! 🎮", description: "New game started. Player 1 goes first!" });
+            }
+          } catch (error) {
+            toast({ title: "Error", description: error.message, variant: "destructive" });
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        const handleCellClick = async (row, col) => {
+          if (!currentGameId || !gameState || gameState.currentPlayer !== 1 || gameState.gamePhase !== 'placement' || gameState.winner) return;
+          setLoading(true);
+          try {
+            const response = await GameService.placeStar(currentGameId, row, col);
+            if (response.success) {
+              setGameState(response.game);
+              toast({ title: "Star Placed! ⭐", description: "Player 2's turn to select a direction" });
+            }
+          } catch (error) {
+            toast({ title: "Error", description: error.message, variant: "destructive" });
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        const handleDirectionSelect = async (direction) => {
+          if (!currentGameId || !gameState || gameState.currentPlayer !== 2 || gameState.gamePhase !== 'direction' || gameState.winner) return;
+          setLoading(true);
+          try {
+            const response = await GameService.selectDirection(currentGameId, direction);
+            if (response.success) {
+              setGameState(response.game);
+              toast({
+                title: `Direction Selected! ${direction}`,
+                description: response.game.winner ? `Player ${response.game.winner} wins!` : "Player 1's turn to place a star"
+              });
+            }
+          } catch (error) {
+            toast({ title: "Error", description: error.message, variant: "destructive" });
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        const handleUndo = async () => {
+          if (!currentGameId || !gameState || gameState.gameHistory.length === 0) return;
+          setLoading(true);
+          try {
+            const response = await GameService.undoMove(currentGameId);
+            if (response.success) {
+              setGameState(response.game);
+              toast({ title: "Move Undone! ↶", description: "Returned to previous game state" });
+            }
+          } catch (error) {
+            toast({ title: "Error", description: error.message, variant: "destructive" });
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        const handleSettingsChange = (newSettings) => {
+          setGameSettings(newSettings);
+          createNewGame(newSettings);
+          setSettingsOpen(false);
+          toast({ title: "Settings Updated! ⚙️", description: "New game started with updated settings" });
+        };
+
+        const renderBoard = () => {
+          const renderCell = (row, col) => {
+            const cell = gameState.board[row][col];
+            let cellContent = '';
+            let cellClass = 'w-16 h-16 border-2 border-gray-300 flex items-center justify-center text-2xl font-bold transition-all duration-300 hover:bg-gray-100 cursor-pointer';
+            if (cell === 'star') {
+              cellContent = '⭐';
+              cellClass += ' bg-yellow-100 hover:bg-yellow-200';
+            } else if (cell === 'circle') {
+              cellContent = '⭕';
+              cellClass += ' bg-blue-100 hover:bg-blue-200';
+            } else {
+              cellClass += ' bg-white hover:bg-gray-50';
+            }
+            const isClickable = gameState.currentPlayer === 1 && gameState.gamePhase === 'placement' && cell === 'empty' && !loading;
+            if (!isClickable) {
+              cellClass = cellClass.replace('cursor-pointer', 'cursor-not-allowed');
+              if (loading) cellClass += ' opacity-50';
+            }
+            return React.createElement(
+              'div',
+              { key: `${row}-${col}`, className: cellClass, onClick: () => isClickable && handleCellClick(row, col) },
+              cellContent
+            );
+          };
+          return React.createElement(
+            Card,
+            { className: 'p-6 bg-gradient-to-br from-indigo-50 to-purple-50' },
+            React.createElement(
+              'div',
+              { className: 'grid grid-cols-6 gap-1 w-fit mx-auto' },
+              Array.from({ length: 6 }, (_, row) =>
+                Array.from({ length: 6 }, (_, col) => renderCell(row, col))
+              )
+            )
+          );
+        };
+
+        const renderStarTracker = () => {
+          const directions = [
+            { key: 'N', label: 'North ↑', icon: '↑' },
+            { key: 'S', label: 'South ↓', icon: '↓' },
+            { key: 'E', label: 'East →', icon: '→' },
+            { key: 'W', label: 'West ←', icon: '←' },
+            { key: 'NE', label: 'Northeast ↗', icon: '↗' },
+            { key: 'NW', label: 'Northwest ↖', icon: '↖' },
+            { key: 'SE', label: 'Southeast ↘', icon: '↘' },
+            { key: 'SW', label: 'Southwest ↙', icon: '↙' }
+          ];
+          const isActive = gameState.currentPlayer === 2 && gameState.gamePhase === 'direction' && !loading;
+          return React.createElement(
+            Card,
+            { className: 'p-6 bg-gradient-to-br from-purple-50 to-pink-50' },
+            React.createElement('h3', { className: 'text-xl font-bold mb-4 text-center text-purple-800' }, 'Star Tracker'),
+            React.createElement(
+              'div',
+              { className: 'grid grid-cols-2 gap-3' },
+              directions.map(direction => {
+                const isAvailable = gameState.availableDirections.includes(direction.key);
+                const isUsed = !isAvailable;
+                return React.createElement(
+                  Button,
+                  {
+                    key: direction.key,
+                    variant: isUsed ? 'secondary' : 'default',
+                    className: `h-12 text-lg font-semibold transition-all duration-300 ${isUsed ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : isActive ? 'bg-purple-600 hover:bg-purple-700 text-white transform hover:scale-105' : 'bg-purple-400 text-white cursor-not-allowed'} ${loading ? 'opacity-50' : ''}`,
+                    onClick: () => isActive && isAvailable && handleDirectionSelect(direction.key),
+                    disabled: isUsed || !isActive || loading
+                  },
+                  React.createElement('span', { className: 'mr-2' }, direction.icon),
+                  direction.key
+                );
+              })
+            ),
+            React.createElement('div', { className: 'mt-4 text-center text-sm text-gray-600' }, `${gameState.availableDirections.length} directions remaining`)
+          );
+        };
+
+        const renderGameStatus = () => {
+          const getPhaseDescription = () => {
+            if (gameState.winner) return 'Game Over';
+            if (gameState.gamePhase === 'placement') return 'Place a star';
+            if (gameState.gamePhase === 'direction') return 'Select a direction';
+            return 'Game starting...';
+          };
+          const getPlayerColor = (player) => (player === 1 ? 'bg-yellow-500' : 'bg-purple-500');
+          return React.createElement(
+            Card,
+            { className: 'p-6 bg-gradient-to-br from-green-50 to-blue-50' },
+            React.createElement(
+              'div',
+              { className: 'space-y-4' },
+              React.createElement(
+                'div',
+                { className: 'text-center' },
+                React.createElement('h2', { className: 'text-2xl font-bold text-gray-800 mb-2' }, `Round ${gameState.round}/${gameState.settings.numberOfRounds}`),
+                gameState.winner
+                  ? React.createElement(
+                      'div',
+                      { className: 'space-y-2' },
+                      React.createElement(Badge, { variant: 'destructive', className: 'text-lg px-4 py-2' }, `🏆 Player ${gameState.winner} Wins!`),
+                      React.createElement('p', { className: 'text-sm text-gray-600' }, gameState.winner === 1 ? 'Empty squares remain!' : 'Board completely filled!')
+                    )
+                  : React.createElement(
+                      'div',
+                      { className: 'space-y-2' },
+                      React.createElement(Badge, { className: `text-lg px-4 py-2 ${getPlayerColor(gameState.currentPlayer)} text-white` }, `Player ${gameState.currentPlayer}'s Turn`),
+                      React.createElement('p', { className: 'text-sm text-gray-600' }, getPhaseDescription())
+                    )
+              ),
+              React.createElement(
+                'div',
+                { className: 'grid grid-cols-2 gap-4 text-center' },
+                React.createElement(
+                  'div',
+                  { className: 'space-y-1' },
+                  React.createElement('div', { className: 'text-sm text-gray-500' }, 'Stars Placed'),
+                  React.createElement('div', { className: 'text-2xl font-bold text-yellow-600' }, gameState.starsPlaced)
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'space-y-1' },
+                  React.createElement('div', { className: 'text-sm text-gray-500' }, 'Directions Used'),
+                  React.createElement('div', { className: 'text-2xl font-bold text-purple-600' }, gameState.settings.numberOfRounds - (gameState.round - 1))
+                )
+              )
+            )
+          );
+        };
+
+        const renderGameControls = () => (
+          React.createElement(
+            Card,
+            { className: 'p-4 bg-gradient-to-br from-slate-50 to-gray-100' },
+            React.createElement(
+              'div',
+              { className: 'space-y-3' },
+              React.createElement(
+                'div',
+                { className: 'text-center' },
+                React.createElement('h3', { className: 'text-lg font-semibold text-gray-800 mb-2' }, 'Game Controls')
+              ),
+              React.createElement(
+                'div',
+                { className: 'space-y-2' },
+                React.createElement(
+                  'div',
+                  { className: 'flex justify-between items-center text-sm' },
+                  React.createElement('span', { className: 'text-gray-600' }, 'Rounds:'),
+                  React.createElement(Badge, { variant: 'outline' }, gameState.settings.numberOfRounds)
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'flex justify-between items-center text-sm' },
+                  React.createElement('span', { className: 'text-gray-600' }, 'Win Threshold:'),
+                  React.createElement(Badge, { variant: 'outline' }, `≥${gameState.settings.emptySquaresToWin} empty`)
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'flex justify-between items-center text-sm' },
+                  React.createElement('span', { className: 'text-gray-600' }, 'History:'),
+                  React.createElement(Badge, { variant: 'outline' }, `${gameState.gameHistory.length} moves`)
+                )
+              ),
+              React.createElement(
+                'div',
+                { className: 'space-y-2' },
+                React.createElement(
+                  Button,
+                  {
+                    onClick: handleUndo,
+                    disabled: gameState.gameHistory.length === 0 || loading,
+                    variant: 'outline',
+                    className: `w-full font-semibold transition-all duration-200 ${gameState.gameHistory.length > 0 && !loading ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white hover:from-orange-600 hover:to-red-600 transform hover:scale-105' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`
+                  },
+                  '↶ Undo Last Move'
+                ),
+                React.createElement(
+                  Button,
+                  {
+                    onClick: () => createNewGame(gameSettings),
+                    disabled: loading,
+                    variant: 'outline',
+                    className: `w-full font-semibold transform hover:scale-105 transition-all duration-200 ${loading ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-green-500 to-teal-500 text-white hover:from-green-600 hover:to-teal-600'}`
+                  },
+                  '🔄 New Game'
+                )
+              ),
+              gameState.gameHistory.length > 0 &&
+                React.createElement(
+                  'div',
+                  { className: 'text-xs text-gray-500 text-center pt-2 border-t' },
+                  `Last action: ${gameState.gameHistory[gameState.gameHistory.length - 1]?.action || 'None'}`
+                )
+            )
+          )
+        );
+
+        const renderGameSettings = () => (
+          React.createElement(
+            Dialog,
+            { open: settingsOpen, onOpenChange: setSettingsOpen },
+            React.createElement(
+              DialogTrigger,
+              { asChild: true },
+              React.createElement(
+                Button,
+                { variant: 'outline', className: 'w-full bg-gradient-to-r from-blue-500 to-indigo-500 text-white hover:from-blue-600 hover:to-indigo-600 font-semibold' },
+                '⚙️ Game Settings'
+              )
+            ),
+            React.createElement(
+              DialogContent,
+              null,
+              React.createElement(
+                DialogHeader,
+                null,
+                React.createElement(DialogTitle, { className: 'text-center' }, '⚙️ Game Settings')
+              ),
+              React.createElement(
+                'div',
+                { className: 'space-y-6 py-4' },
+                React.createElement(
+                  'div',
+                  { className: 'space-y-2' },
+                  React.createElement(Label, { htmlFor: 'rounds', className: 'text-sm font-semibold' }, 'Number of Rounds (Stars to Place)'),
+                  React.createElement(
+                    'div',
+                    { className: 'space-y-2' },
+                    React.createElement(Slider, {
+                      id: 'rounds',
+                      min: 4,
+                      max: 12,
+                      step: 1,
+                      value: [tempSettings.numberOfRounds],
+                      onValueChange: (value) => setTempSettings({ ...tempSettings, numberOfRounds: value[0] }),
+                      className: 'w-full'
+                    }),
+                    React.createElement(
+                      'div',
+                      { className: 'flex justify-between text-xs text-gray-500' },
+                      React.createElement('span', null, '4'),
+                      React.createElement('span', { className: 'font-semibold text-blue-600' }, tempSettings.numberOfRounds),
+                      React.createElement('span', null, '12')
+                    )
+                  ),
+                  React.createElement('p', { className: 'text-xs text-gray-600' }, 'Each round = 1 star placed + 1 direction used')
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'space-y-2' },
+                  React.createElement(Label, { htmlFor: 'winCondition', className: 'text-sm font-semibold' }, 'Player 1 Wins if Empty Squares ≥'),
+                  React.createElement(
+                    'div',
+                    { className: 'space-y-2' },
+                    React.createElement(Slider, {
+                      id: 'winCondition',
+                      min: 1,
+                      max: 10,
+                      step: 1,
+                      value: [tempSettings.emptySquaresToWin],
+                      onValueChange: (value) => setTempSettings({ ...tempSettings, emptySquaresToWin: value[0] }),
+                      className: 'w-full'
+                    }),
+                    React.createElement(
+                      'div',
+                      { className: 'flex justify-between text-xs text-gray-500' },
+                      React.createElement('span', null, '1'),
+                      React.createElement('span', { className: 'font-semibold text-green-600' }, tempSettings.emptySquaresToWin),
+                      React.createElement('span', null, '10')
+                    )
+                  ),
+                  React.createElement('p', { className: 'text-xs text-gray-600' }, `Player 2 wins if empty squares < ${tempSettings.emptySquaresToWin}`)
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'bg-gray-50 p-3 rounded-lg' },
+                  React.createElement('h4', { className: 'font-semibold text-sm mb-2' }, 'Balance Preview:'),
+                  React.createElement(
+                    'div',
+                    { className: 'space-y-1 text-xs' },
+                    React.createElement('div', null, `🎯 ${tempSettings.numberOfRounds} stars will be placed`),
+                    React.createElement('div', null, `🎯 ${tempSettings.numberOfRounds} directions will be used`),
+                    React.createElement('div', null, `🏆 Player 1 needs ≥${tempSettings.emptySquaresToWin} empty squares to win`),
+                    React.createElement('div', null, `🏆 Player 2 needs <${tempSettings.emptySquaresToWin} empty squares to win`)
+                  )
+                ),
+                React.createElement(
+                  'div',
+                  { className: 'flex space-x-3' },
+                  React.createElement(
+                    Button,
+                    { variant: 'outline', onClick: () => setTempSettings(defaultGameSettings), className: 'flex-1' },
+                    '🔄 Reset Defaults'
+                  ),
+                  React.createElement(
+                    Button,
+                    { onClick: () => handleSettingsChange(tempSettings), className: 'flex-1 bg-gradient-to-r from-green-500 to-teal-500 text-white hover:from-green-600 hover:to-teal-600' },
+                    '✅ Apply & New Game'
+                  )
+                )
+              )
+            )
+          )
+        );
+
+        const renderGameRules = () => (
+          React.createElement(
+            Collapsible,
+            { open: rulesOpen, onOpenChange: setRulesOpen },
+            React.createElement(
+              CollapsibleTrigger,
+              { asChild: true },
+              React.createElement(Button, { variant: 'outline', className: 'w-full' }, rulesOpen ? 'Hide Rules' : 'Show Rules 📜')
+            ),
+            React.createElement(
+              CollapsibleContent,
+              { className: 'mt-4 space-y-3 text-sm' },
+              React.createElement(
+                'div',
+                { className: 'space-y-2' },
+                React.createElement('h4', { className: 'font-semibold text-amber-800' }, 'How to Play:'),
+                React.createElement(
+                  'ul',
+                  { className: 'list-disc list-inside space-y-1 text-gray-700' },
+                  React.createElement('li', null, React.createElement('strong', null, 'Player 1:'), ' Places one ⭐ star per turn on empty squares'),
+                  React.createElement('li', null, React.createElement('strong', null, 'Player 2:'), ' Selects a direction from the star tracker'),
+                  React.createElement('li', null, 'When a direction is chosen, all squares in that direction from each star become ⭕ circles'),
+                  React.createElement('li', null, 'Lines stop at board edges'),
+                  React.createElement('li', null, 'Game lasts 8 rounds (all directions used)')
+                )
+              ),
+              React.createElement(
+                'div',
+                { className: 'space-y-2' },
+                React.createElement('h4', { className: 'font-semibold text-amber-800' }, 'Win Conditions:'),
+                React.createElement(
+                  'ul',
+                  { className: 'list-disc list-inside space-y-1 text-gray-700' },
+                  React.createElement('li', null, React.createElement('strong', null, 'Player 1 wins:'), ' If any empty squares remain after 8 rounds'),
+                  React.createElement('li', null, React.createElement('strong', null, 'Player 2 wins:'), ' If the board is completely filled')
+                )
+              ),
+              React.createElement(
+                'div',
+                { className: 'space-y-2' },
+                React.createElement('h4', { className: 'font-semibold text-amber-800' }, 'Strategy Tips:'),
+                React.createElement(
+                  'ul',
+                  { className: 'list-disc list-inside space-y-1 text-gray-700' },
+                  React.createElement('li', null, 'Player 1: Try to place stars to preserve empty squares'),
+                  React.createElement('li', null, 'Player 2: Choose directions that fill the most squares'),
+                  React.createElement('li', null, 'Think ahead - each direction can only be used once!')
+                )
+              )
+            )
+          )
+        );
+
+        if (!gameState) {
+          return React.createElement(
+            'div',
+            { className: 'min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center' },
+            React.createElement(
+              'div',
+              { className: 'text-center' },
+              React.createElement('div', { className: 'text-4xl mb-4' }, '🎮'),
+              React.createElement('div', { className: 'text-lg' }, 'Loading game...')
+            )
+          );
+        }
+
+        return React.createElement(
+          'div',
+          null,
+          React.createElement(
+            'div',
+            { className: 'min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4' },
+            React.createElement(
+              'div',
+              { className: 'max-w-6xl mx-auto' },
+              React.createElement(
+                'header',
+                { className: 'text-center mb-8' },
+                React.createElement('h1', { className: 'text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600 mb-2' }, '⭐ Star Direction Game ⭐'),
+                React.createElement('p', { className: 'text-lg text-gray-600' }, 'Strategic placement meets directional transformation')
+              ),
+              React.createElement(
+                'div',
+                { className: 'grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6' },
+                React.createElement('div', { className: 'lg:col-span-2' }, renderBoard()),
+                React.createElement(
+                  'div',
+                  { className: 'space-y-4' },
+                  renderGameStatus(),
+                  renderStarTracker(),
+                  renderGameControls(),
+                  renderGameSettings()
+                )
+              ),
+              renderGameRules()
+            )
+          ),
+          React.createElement(
+            'div',
+            { className: 'fixed bottom-4 right-4 flex flex-col gap-2' },
+            window.toasts && window.toasts.map(toast =>
+              React.createElement(
+                'div',
+                { key: toast.id, className: `p-4 rounded-md shadow-md ${toast.variant === 'destructive' ? 'bg-red-500 text-white' : 'bg-white text-gray-800'}` },
+                React.createElement('div', { className: 'font-bold' }, toast.title),
+                React.createElement('div', null, toast.description)
+              )
+            )
+          )
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(React.createElement(Game));
+    </script>
+  </body>
+</html>
